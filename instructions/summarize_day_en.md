@@ -31,18 +31,19 @@ Below are the details, analyses, and predictions for today's matches:
      Do not add any sign-offs, greetings, or other concluding text.
    - **Game Template**: For each match, you MUST strictly follow this exact template with no deviations:
      ```markdown
-     ## [Home Team Flag] [Home Team] vs [Away Team] [Away Team Flag]
-     Local Time: [Local Time DD-MM-YY HH:MM]
+      ## [Home Team Flag] [Home Team] vs [Away Team] [Away Team Flag]
+      Local Time: [Local Time DD-MM-YY HH:MM]
 
-     📝 **Match Analysis:** [Very concise match analysis, 1 sentence max. You MUST include the full 1X2 betting odds (home win, draw, underdog win). You MUST NOT state or mention any betting service, website, or bookmaker source used (present the odds numbers only)]
-     🏥 **Injuries & Suspensions:**
-     **[Home Team]:** [very brief]
-     **[Away Team]:** [very brief]
-     ⚡ **Form & Tactics:** [Form and tactics details - very brief, 1 sentence max]
-     🔮 **Prediction & Estimated Score:**
-     **Prediction:** [e.g. Win for Germany]
-     **Estimated Score:** [e.g. 2 - 1]
-     **Confidence Level:** [High / Medium / Low]
-     **Reasoning:** [Very brief single sentence reasoning]
+      📝 **Match Analysis:** [Very concise match analysis, 1 sentence max. You MUST NOT include the betting odds here.]
+      📊 **Betting Odds:** [Home Team] - [Home Win Odds], [Away Team] - [Away Win Odds], Tie - [Draw Odds] (Present the 3-way match winner odds. Do NOT state or mention any betting service, website, or bookmaker source used, present the numbers only)
+      🏥 **Injuries & Suspensions:**
+      **[Home Team]:** [very brief]
+      **[Away Team]:** [very brief]
+      ⚡ **Form & Tactics:** [Form and tactics details - very brief, 1 sentence max]
+      🔮 **Prediction & Estimated Score:**
+      **Prediction:** [e.g. Win for Germany]
+      **Estimated Score:** [e.g. 2 - 1]
+      **Confidence Level:** [High / Medium / Low]
+      **Reasoning:** [Very brief single sentence reasoning]
      ```
 4. **Tone**: Passionate, professional, analytical, and authoritative.
