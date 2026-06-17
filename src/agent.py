@@ -31,6 +31,14 @@ class Match(BaseModel):
 class MatchList(BaseModel):
     matches: list[Match] = Field(description="List of matches scheduled")
 
+class MatchValidation(BaseModel):
+    match_name: str = Field(description="The match name in format 'Home Team vs Away Team' exactly matching the list of matches.")
+    is_complete: bool = Field(description="True if the analysis successfully found all critical details (current betting odds, injuries/suspensions, form). False if there are statements about missing, unavailable, or unknown info/data for this match.")
+    missing_details_summary: str = Field(description="A brief explanation of what is missing or unavailable if is_complete is False, otherwise an empty string.")
+
+class ValidationResult(BaseModel):
+    results: list[MatchValidation] = Field(description="Validation results for all matches.")
+
 def load_instruction(filename: str) -> str:
     """Loads instruction prompt from the instructions directory."""
     path = config.INSTRUCTIONS_DIR / filename
@@ -82,6 +90,51 @@ STADIUM_CITIES = {
     '16': 'Los Angeles',
 }
 
+
+def is_valid_team(team_name: str) -> bool:
+    """Checks if a team name matches one of the 48 qualified World Cup 2026 teams (including common variations)."""
+    import unicodedata
+    if not team_name:
+        return False
+        
+    # Standardize and normalize name
+    n = team_name.strip().lower()
+    
+    # Remove accents/diacritics (e.g. Côte d'Ivoire -> cote d'ivoire, Curaçao -> curacao)
+    n = "".join(c for c in unicodedata.normalize('NFD', n) if unicodedata.category(c) != 'Mn')
+    
+    # Replace symbols/common abbreviations
+    n = n.replace("&", "and")
+    n = n.replace("-", " ").replace(".", "").replace("'", "")
+    
+    # Normalize suffixes/prefixes (order matters: longer matches first)
+    n = n.replace("democratic republic of the ", "").replace("democratic republic of ", "").replace("republic of the ", "").replace("republic of ", "").replace("dr ", "")
+    n = n.replace("the ", "")
+    n = " ".join(n.split())
+    
+    VALID_NORMALIZED_TEAMS = {
+        "algeria", "alg", "argentina", "arg", "australia", "aus", "austria", "aut", "belgium", "bel",
+        "bosnia and herzegovina", "bosnia herzegovina", "bosnia", "bih", "brazil", "brasil", "bra",
+        "canada", "can", "cape verde", "cabo verde", "cpv", "colombia", "col",
+        "croatia", "cro", "curacao", "cuw", "czech republic", "czechia", "cze", "congo", "congo dr", 
+        "democratic republic of congo", "dr congo", "rd congo", "rdc", "cod", "ecuador", "ecu", "egypt", "egy", 
+        "england", "eng", "france", "fra", "germany", "deutschland", "ger", "ghana", "gha", "haiti", "hai", 
+        "iran", "islamic iran", "irn", "iraq", "irq", "ivory coast", "cote divoire", "cote d ivoire", "cote d'ivoire", "civ",
+        "japan", "jpn", "jp", "jordan", "jor", "mexico", "united mexican states", "mex",
+        "morocco", "mar", "netherlands", "holland", "ned", "nl", "new zealand", "nzl", "nz", "norway", "nor", 
+        "panama", "pan", "paraguay", "par", "portugal", "por", "qatar", "qat", "saudi arabia", "saudi", "ksa", 
+        "scotland", "sco", "senegal", "sen", "south africa", "rsa", "za",
+        "south korea", "korea republic", "korea", "republic of korea", "kor", "kr", "spain", "espana", "esp", 
+        "sweden", "swe", "switzerland", "sui", "ch", "tunisia", "tun", "turkey", "turkiye", "tur",
+        "usa", "us", "united states", "united states of america", "america", "uruguay", "uru", "uzbekistan", "uzb"
+    }
+    
+    return n in VALID_NORMALIZED_TEAMS
+
+def is_placeholder_team(team_name: str) -> bool:
+    """Detects if a team name is NOT a valid qualified World Cup 2026 team."""
+    return not is_valid_team(team_name)
+
 def retrieve_matches_via_api(now_israel: datetime) -> list[Match]:
     """Retrieves World Cup matches starting in the upcoming 24 hours from the current Israel time."""
     from datetime import timedelta
@@ -117,6 +170,7 @@ def retrieve_matches_via_api(now_israel: datetime) -> list[Match]:
                 home = g.get("home_team_name_en")
                 away = g.get("away_team_name_en")
                 
+                
                 # Format time with date in Israel Time (keep standard YYYY-MM-DD HH:MM for LLM retrieval and analysis)
                 time_part_israel = game_israel_dt.strftime("%Y-%m-%d %H:%M")
                 
@@ -130,8 +184,166 @@ def retrieve_matches_via_api(now_israel: datetime) -> list[Match]:
                     match_time_israel=time_part_israel,
                     match_time_local=time_part_local
                 ))
+        except ValueError as e:
+            # Re-raise value errors (like placeholders) to trigger fallback cascade
+            raise e
         except Exception:
             continue
+    return matches
+
+def retrieve_matches_via_secondary_api(now_israel: datetime) -> list[Match]:
+    """Retrieves World Cup matches starting in the upcoming 24 hours from the secondary JSON API (thestatsapi.com)."""
+    from datetime import timedelta
+    url = "https://www.thestatsapi.com/world-cup/data/fixtures.json"
+    response = requests.get(url, timeout=15)
+    response.raise_for_status()
+    data = response.json()
+    fixtures = data.get("fixtures", [])
+    
+    matches = []
+    israel_tz = zoneinfo.ZoneInfo("Asia/Jerusalem")
+    
+    CITY_TIMEZONES = {
+        'mexico-city': 'America/Mexico_City',
+        'guadalajara': 'America/Mexico_City',
+        'monterrey': 'America/Monterrey',
+        'dallas': 'America/Chicago',
+        'houston': 'America/Chicago',
+        'kansas-city': 'America/Chicago',
+        'atlanta': 'America/New_York',
+        'miami': 'America/New_York',
+        'boston': 'America/New_York',
+        'philadelphia': 'America/New_York',
+        'new-york': 'America/New_York',
+        'toronto': 'America/Toronto',
+        'vancouver': 'America/Vancouver',
+        'los-angeles': 'America/Los_Angeles',
+        'seattle': 'America/Los_Angeles',
+        'san-francisco': 'America/Los_Angeles',
+    }
+    
+    for f in fixtures:
+        home = f.get("homeTeam")
+        away = f.get("awayTeam")
+        kickoff_utc_str = f.get("kickoffUtc")
+        if not home or not away or not kickoff_utc_str:
+            continue
+            
+        try:
+            # Parse ISO UTC date string
+            game_utc_dt = datetime.fromisoformat(kickoff_utc_str.replace('Z', '+00:00'))
+            game_israel_dt = game_utc_dt.astimezone(israel_tz)
+            
+            # Check if game is in the upcoming 24 hours from now
+            time_diff = game_israel_dt - now_israel
+            if timedelta(hours=0) <= time_diff <= timedelta(hours=24):
+
+                time_part_israel = game_israel_dt.strftime("%Y-%m-%d %H:%M")
+                
+                host_city_key = f.get("hostCity", "").lower().replace(' ', '-').strip()
+                tz_name = CITY_TIMEZONES.get(host_city_key, 'America/New_York')
+                game_local_dt = game_utc_dt.astimezone(zoneinfo.ZoneInfo(tz_name))
+                
+                city_name = f.get("hostCity", "New York/New Jersey")
+                time_part_local = f"{game_local_dt.strftime('%Y-%m-%d %H:%M (%Z)')} - {city_name}"
+                
+                matches.append(Match(
+                    home_team=home,
+                    away_team=away,
+                    match_time_israel=time_part_israel,
+                    match_time_local=time_part_local
+                ))
+        except ValueError as e:
+            raise e
+        except Exception:
+            continue
+            
+    return matches
+
+def retrieve_matches_via_tertiary_api(now_israel: datetime) -> list[Match]:
+    """Retrieves World Cup matches starting in the upcoming 24 hours from the tertiary OpenFootball JSON API."""
+    import re
+    from datetime import timezone, timedelta
+    
+    url = "https://raw.githubusercontent.com/openfootball/worldcup.json/master/2026/worldcup.json"
+    response = requests.get(url, timeout=15)
+    response.raise_for_status()
+    data = response.json()
+    matches_raw = data.get("matches", [])
+    
+    matches = []
+    israel_tz = zoneinfo.ZoneInfo("Asia/Jerusalem")
+    
+    GROUND_TIMEZONES = {
+        'mexico city': 'America/Mexico_City',
+        'guadalajara (zapopan)': 'America/Mexico_City',
+        'monterrey (guadalupe)': 'America/Monterrey',
+        'dallas (arlington)': 'America/Chicago',
+        'houston': 'America/Chicago',
+        'kansas city': 'America/Chicago',
+        'atlanta': 'America/New_York',
+        'miami (miami gardens)': 'America/New_York',
+        'boston (foxborough)': 'America/New_York',
+        'philadelphia': 'America/New_York',
+        'new york/new jersey (east rutherford)': 'America/New_York',
+        'toronto': 'America/Toronto',
+        'vancouver': 'America/Vancouver',
+        'los angeles (inglewood)': 'America/Los_Angeles',
+        'seattle': 'America/Los_Angeles',
+        'san-francisco': 'America/Los_Angeles',
+        'san francisco bay area (santa clara)': 'America/Los_Angeles',
+    }
+    
+    for m in matches_raw:
+        home = m.get("team1")
+        away = m.get("team2")
+        date_str = m.get("date")
+        time_str = m.get("time")
+        ground = m.get("ground", "")
+        
+        if not home or not away or not date_str or not time_str:
+            continue
+            
+        try:
+            # Parse time_str (e.g. "13:00 UTC-6")
+            match = re.match(r"(\d{1,2}):(\d{2})\s+UTC([+-]\d+)", time_str)
+            if not match:
+                continue
+                
+            hour = int(match.group(1))
+            minute = int(match.group(2))
+            offset_hours = int(match.group(3))
+            
+            base_dt = datetime.strptime(date_str, "%Y-%m-%d")
+            tz = timezone(timedelta(hours=offset_hours))
+            game_utc_dt = datetime(base_dt.year, base_dt.month, base_dt.day, hour, minute, tzinfo=tz).astimezone(timezone.utc)
+            game_israel_dt = game_utc_dt.astimezone(israel_tz)
+            
+            # Check if game is in the upcoming 24 hours from now
+            time_diff = game_israel_dt - now_israel
+            if timedelta(hours=0) <= time_diff <= timedelta(hours=24):
+                if is_placeholder_team(home) or is_placeholder_team(away):
+                    raise ValueError(f"Placeholder team detected in tertiary API: {home} vs {away}")
+                    
+                time_part_israel = game_israel_dt.strftime("%Y-%m-%d %H:%M")
+                
+                ground_key = ground.lower().strip()
+                tz_name = GROUND_TIMEZONES.get(ground_key, 'America/New_York')
+                game_local_dt = game_utc_dt.astimezone(zoneinfo.ZoneInfo(tz_name))
+                
+                time_part_local = f"{game_local_dt.strftime('%Y-%m-%d %H:%M (%Z)')} - {ground}"
+                
+                matches.append(Match(
+                    home_team=home,
+                    away_team=away,
+                    match_time_israel=time_part_israel,
+                    match_time_local=time_part_local
+                ))
+        except ValueError as e:
+            raise e
+        except Exception:
+            continue
+            
     return matches
 
 def generate_content_with_retry(client, model, contents, config=None, max_retries=15):
@@ -346,22 +558,53 @@ def run_pipeline():
     print("\n[Step 1] Retrieving scheduled matches for the next 24 hours...")
     matches = []
     
-    # Try retrieving from the free REST API first
+    # 1. Try Primary API
     try:
-        print("   🔄 Connecting to World Cup 2026 REST API...")
+        print("   🔄 Connecting to World Cup 2026 REST API (Primary)...")
         matches = retrieve_matches_via_api(now_israel)
-        print("   ✅ API Call Successful!")
+        if matches:
+            print(f"   ✅ Primary API Successful! Retrieved {len(matches)} matches.")
+        else:
+            print("   ⚠️ Primary API returned 0 matches. Trying fallback APIs...")
     except Exception as e:
-        print(f"   ⚠️ API Call Failed ({e}).")
+        print(f"   ⚠️ Primary API Failed: {e}")
+        
+    # 2. Try Secondary API if no matches found
+    if not matches:
+        try:
+            print("   🔄 Connecting to World Cup Fixtures JSON API (Secondary)...")
+            matches = retrieve_matches_via_secondary_api(now_israel)
+            if matches:
+                print(f"   ✅ Secondary API Successful! Retrieved {len(matches)} matches.")
+            else:
+                print("   ⚠️ Secondary API returned 0 matches. Trying fallback APIs...")
+        except Exception as e:
+            print(f"   ⚠️ Secondary API Failed: {e}")
+            
+    # 3. Try Tertiary API if no matches found
+    if not matches:
+        try:
+            print("   🔄 Connecting to OpenFootball JSON API (Tertiary)...")
+            matches = retrieve_matches_via_tertiary_api(now_israel)
+            if matches:
+                print(f"   ✅ Tertiary API Successful! Retrieved {len(matches)} matches.")
+            else:
+                print("   ⚠️ Tertiary API returned 0 matches. Falling back to search grounding...")
+        except Exception as e:
+            print(f"   ⚠️ Tertiary API Failed: {e}")
+            
+    # 4. Try Search Grounding if all APIs returned 0 matches or failed
+    if not matches:
         print("   🔄 Falling back to Gemini search grounding for match retrieval...")
+        import json
         
         retrieve_instr = load_instruction("retrieve_games.md").format(current_datetime=now_israel_str)
+        retrieve_instr += "\n\nCRITICAL: You must return the output as a raw JSON object matching the MatchList schema (a dictionary with a 'matches' key containing a list of match objects). Do not wrap the JSON in markdown code blocks, and do not write any explanation outside the JSON."
+        
         # Enable search grounding for match retrieval fallback
         grounding_tool = types.Tool(google_search=types.GoogleSearch())
         config_retrieval = types.GenerateContentConfig(
             tools=[grounding_tool],
-            response_mime_type="application/json",
-            response_schema=MatchList,
         )
 
         try:
@@ -371,10 +614,27 @@ def run_pipeline():
                 contents=retrieve_instr,
                 config=config_retrieval,
             )
-            match_list: MatchList = response.parsed
-            if match_list and match_list.matches:
-                matches = match_list.matches
-            print("   ✅ Fallback Gemini Search Retrieval Successful!")
+            resp_text = response.text.strip()
+            
+            # Clean up potential markdown code block wrappers
+            if resp_text.startswith("```"):
+                lines = resp_text.splitlines()
+                if lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].startswith("```"):
+                    lines = lines[:-1]
+                resp_text = "\n".join(lines).strip()
+            
+            data = json.loads(resp_text)
+            matches_data = data.get("matches", [])
+            for m in matches_data:
+                matches.append(Match(
+                    home_team=m.get("home_team"),
+                    away_team=m.get("away_team"),
+                    match_time_israel=m.get("match_time_israel"),
+                    match_time_local=m.get("match_time_local")
+                ))
+            print(f"   ✅ Fallback Gemini Search Retrieval Successful! Retrieved {len(matches)} matches.")
         except Exception as fallback_err:
             print(f"   ❌ Critical Error in fallback retrieval: {fallback_err}", file=sys.stderr)
             sys.exit(1)
@@ -421,46 +681,167 @@ def run_pipeline():
     print("[Step 2 & 3] Researching and Predicting Matches (Individual Calls)")
     print("-" * 60)
     
+    # Map each match to its latest analysis text, retry/attempt state, and feedback
+    # Keys will be "Home Team vs Away Team"
+    match_analyses = {}
+    match_attempts = {f"{m.home_team} vs {m.away_team}": 0 for m in matches}
+    match_missing_feedback = {f"{m.home_team} vs {m.away_team}": "" for m in matches}
+    
+    max_pipeline_attempts = 3
+    pipeline_attempt = 1
+    
     analyze_instr_template = load_instruction("analyze_game.md")
     predict_instr_template = load_instruction("predict_game.md")
     grounding_tool = types.Tool(google_search=types.GoogleSearch())
-
-    individual_analyses = []
     
-    for i, match in enumerate(matches, start=1):
-        print(f"\n   🔍 [{i}/{len(matches)}] Analyzing and predicting {match.home_team} vs {match.away_team}...")
+    while pipeline_attempt <= max_pipeline_attempts:
+        print(f"\n🔄 Pipeline Validation Attempt {pipeline_attempt}/{max_pipeline_attempts}...")
         
-        match_prompt = (
-            f"You are a professional football analyst and tipster. Your task is to perform web research "
-            f"and make scoreline/winner predictions for the upcoming match:\n\n"
-            f"Match: {match.home_team} vs {match.away_team}\n"
-            f"Scheduled Time (Israel Time): {match.match_time_israel}\n"
-            f"Scheduled Time (Local Time): {match.match_time_local}\n\n"
-            f"--- RESEARCH GUIDELINES ---\n"
-            f"{analyze_instr_template.format(home_team=match.home_team, away_team=match.away_team, date=today_str)}\n\n"
-            f"--- PREDICTION GUIDELINES ---\n"
-            f"{predict_instr_template.format(home_team=match.home_team, away_team=match.away_team, analysis_context='(Use your research findings to predict)')}"
+        # Determine which matches need to be analyzed (or re-analyzed)
+        matches_to_analyze = []
+        for m in matches:
+            m_key = f"{m.home_team} vs {m.away_team}"
+            if m_key not in match_analyses:
+                matches_to_analyze.append(m)
+                
+        if not matches_to_analyze:
+            print("   ✅ No matches need analysis/re-analysis in this iteration.")
+        else:
+            print(f"   🔍 Analyzing {len(matches_to_analyze)} match(es)...")
+            for m in matches_to_analyze:
+                m_key = f"{m.home_team} vs {m.away_team}"
+                match_attempts[m_key] += 1
+                curr_attempt = match_attempts[m_key]
+                
+                print(f"      👉 Researching and predicting {m_key} (Match Attempt {curr_attempt})...")
+                
+                extra_instruction = ""
+                if curr_attempt > 1:
+                    feedback = match_missing_feedback.get(m_key, "")
+                    feedback_str = f" (specifically: {feedback})" if feedback else ""
+                    extra_instruction = (
+                        f"\n\n⚠️ RETRY WARNING (Attempt {curr_attempt}): In the previous attempt, "
+                        f"the validator flagged that some information{feedback_str} was missing, unavailable, or could not be found. "
+                        f"This information IS available on the web. Please perform a more thorough search using different/broader queries (e.g. searching ESPN, WhoScored, Bet365, "
+                        f"Oddsportal, rotowire, wiki, etc. for '{m.home_team} vs {m.away_team}'), and ensure that every section is populated with concrete facts, "
+                        f"odds, and injury details instead of writing 'not available'."
+                    )
+                
+                match_prompt = (
+                    f"You are a professional football analyst and tipster. Your task is to perform web research "
+                    f"and make scoreline/winner predictions for the upcoming match:\n\n"
+                    f"Match: {m.home_team} vs {m.away_team}\n"
+                    f"Scheduled Time (Israel Time): {m.match_time_israel}\n"
+                    f"Scheduled Time (Local Time): {m.match_time_local}\n\n"
+                    f"--- RESEARCH GUIDELINES ---\n"
+                    f"{analyze_instr_template.format(home_team=m.home_team, away_team=m.away_team, date=today_str)}\n\n"
+                    f"--- PREDICTION GUIDELINES ---\n"
+                    f"{predict_instr_template.format(home_team=m.home_team, away_team=m.away_team, analysis_context='(Use your research findings to predict)')}"
+                    f"{extra_instruction}"
+                )
+                
+                try:
+                    config_analysis = types.GenerateContentConfig(tools=[grounding_tool])
+                    analysis_resp = generate_content_with_retry(
+                        client=client,
+                        model=model_name,
+                        contents=match_prompt,
+                        config=config_analysis,
+                    )
+                    match_analyses[m_key] = analysis_resp.text
+                except Exception as e:
+                    print(f"      ❌ Error researching {m_key}: {e}", file=sys.stderr)
+                    if pipeline_attempt == max_pipeline_attempts:
+                        raise e
+                    continue
+        
+        # Build the combined report to send to the Validator LLM
+        combined_report_list = []
+        for idx, m in enumerate(matches, start=1):
+            m_key = f"{m.home_team} vs {m.away_team}"
+            analysis_text = match_analyses.get(m_key, "[No analysis generated yet]")
+            combined_report_list.append(
+                f"=========================================\n"
+                f"MATCH {idx}: {m_key}\n"
+                f"=========================================\n"
+                f"{analysis_text}\n"
+            )
+        combined_report_str = "\n".join(combined_report_list)
+        
+        # Run Validator LLM
+        print("   🔍 Validating combined match analyses and predictions...")
+        validator_prompt = (
+            f"You are a strict validation agent. Your job is to check the combined match report below "
+            f"and determine if all critical details (current betting odds, injuries/suspensions, and form) "
+            f"were successfully retrieved for each match.\n\n"
+            f"Specifically, verify if the analysis contains any statements indicating that info is missing, "
+            f"unavailable, unknown, or not found (e.g., 'no odds found', 'injuries not available', 'unknown form'). "
+            f"If a match report contains such statements, mark `is_complete` as false for that match and explain what was missing "
+            f"in `missing_details_summary`.\n\n"
+            f"Here is the list of matches you must validate:\n"
+            + "\n".join([f"- {m.home_team} vs {m.away_team}" for m in matches]) + "\n\n"
+            f"--- COMBINED MATCH REPORT ---\n"
+            f"{combined_report_str}"
+        )
+        
+        config_validation = types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=ValidationResult,
         )
         
         try:
-            config_analysis = types.GenerateContentConfig(tools=[grounding_tool])
-            analysis_resp = generate_content_with_retry(
+            validation_resp = generate_content_with_retry(
                 client=client,
-                model=model_name,
-                contents=match_prompt,
-                config=config_analysis,
+                model="gemini-2.5-flash",
+                contents=validator_prompt,
+                config=config_validation,
             )
-            match_analysis_text = analysis_resp.text
-            print(f"      ✅ Match analyzed successfully.")
-        except Exception as e:
-            print(f"      ❌ Error during analysis of {match.home_team} vs {match.away_team}: {e}", file=sys.stderr)
-            raise e
+            import json
+            validation_data = json.loads(validation_resp.text)
+            validation_result = ValidationResult(**validation_data)
             
+            any_incomplete = False
+            for res in validation_result.results:
+                print(f"      • Match '{res.match_name}': Complete = {res.is_complete}")
+                if not res.is_complete:
+                    any_incomplete = True
+                    print(f"        Reason: {res.missing_details_summary}")
+                    
+                    # Evict from match_analyses to trigger re-analysis in the next loop
+                    if res.match_name in match_analyses:
+                        del match_analyses[res.match_name]
+                    match_missing_feedback[res.match_name] = res.missing_details_summary
+            
+            if not any_incomplete:
+                print("   ✅ All match analyses are complete and valid!")
+                break
+                
+        except Exception as e:
+            print(f"   ⚠️ Error during validation step: {e}", file=sys.stderr)
+            if pipeline_attempt == max_pipeline_attempts:
+                raise RuntimeError(f"Validation step failed: {e}")
+        
+        pipeline_attempt += 1
+        
+    else:
+        # If we exited the loop without breaking, we reached the max attempts and some matches are still incomplete.
+        print("\n❌ CRITICAL: Incomplete information after maximum attempts.", file=sys.stderr)
+        for m in matches:
+            m_key = f"{m.home_team} vs {m.away_team}"
+            if m_key not in match_analyses:
+                feedback = match_missing_feedback.get(m_key, "Unknown details missing")
+                print(f"   - Match '{m_key}' is still missing data: {feedback}", file=sys.stderr)
+        raise RuntimeError("Pipeline terminated: Unable to retrieve complete information for all scheduled matches.")
+
+    # Reconstruct the chronological list of individual analyses
+    individual_analyses = []
+    for idx, m in enumerate(matches, start=1):
+        m_key = f"{m.home_team} vs {m.away_team}"
         individual_analyses.append(
             f"=========================================\n"
-            f"MATCH {i}: {match.home_team} vs {match.away_team}\n"
+            f"MATCH {idx}: {m_key}\n"
             f"=========================================\n"
-            f"{match_analysis_text}\n"
+            f"{match_analyses[m_key]}\n"
         )
         
     matches_data_str = "\n".join(individual_analyses)

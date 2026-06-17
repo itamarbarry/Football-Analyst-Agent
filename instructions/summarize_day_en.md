@@ -21,6 +21,7 @@ Below are the details, analyses, and predictions for today's matches:
    - In the final English summary, you MUST:
      - **Completely omit** Israel Time. Do not include it for any match.
      - Convert **Local Time** to `DD-MM-YY HH:MM` (e.g. `14-06-26 12:00`). Do not include any city name or timezone abbreviation.
+5. **Team Names**: Write all team names strictly using the actual name of the country/team itself, with no extra abbreviations, suffixes, or qualifiers (e.g., write `Congo DR` instead of `Congo (DR)` or `Congo DR (DR)`). Do not append any text, indicators, abbreviations, or information inside or outside parentheses next to the country name.
 
 3. **Structure of the Summary**:
    - **Main Title**: Start directly with the title in the format `# 📅 {date} - World Cup Match Analysis`.

@@ -2,17 +2,19 @@
 
 An automated AI agent that tracks upcoming FIFA World Cup 2026 matches, performs real-time research, predicts outcomes, formats summaries for mobile screens, and broadcasts them to a Telegram channel.
 
-The agent is powered by the new **Google GenAI SDK** (utilizing `gemini-2.5-pro` as primary, with a rotation fallback chain of `gemini-2.5-flash` and `gemini-3.5-flash` protected by a 45-second client timeout) and leverages **Google Search Grounding** to retrieve up-to-date data on odds, injuries, lineups, and team form.
+The agent is powered by the **Google GenAI SDK** (utilizing `gemini-2.5-pro` with a rotation fallback chain of `gemini-2.5-flash` and `gemini-3.5-flash` protected by a 45-second client timeout) and leverages **Google Search Grounding** for real-time match data.
 
 ---
 
 ## 🌟 How the Agent Works
 
-The agent operates as an autonomous football analyst, continuously monitoring upcoming World Cup fixtures. Each day, it searches the web to identify all matches scheduled to be played within the next 24 hours.
+The agent runs in five sequential stages:
 
-For every upcoming match, the agent performs extensive research across multiple online sources, gathering key information such as current betting odds, recent team form, player injuries and suspensions, head-to-head statistics, and insights from football experts and analysts.
-
-Using this information, the agent evaluates each matchup and generates its own scoreline and winner predictions. The results are then automatically formatted into a mobile-friendly report and published directly to a Telegram channel.
+1. **Matchday Verification**: Checks if the current date is a scheduled World Cup 2026 matchday (June 11 to July 19, excluding rest days) to save API costs, unless overridden via `--force`.
+2. **Daily Matches Retrieval (Step 1)**: Queries the **World Cup 2026 REST API (worldcup26.ir)** for upcoming matches. If it fails or returns no matches, the agent sequentially falls back to **thestatsapi.com**, then to the **OpenFootball API (GitHub)**, and finally to **Gemini Search Grounding** if all APIs fail.
+3. **Research & Prediction (Steps 2 & 3)**: Queries Google Search Grounding for each match to research team news, betting odds, injuries, suspensions, and tactical form, generating detailed previews and score predictions.
+4. **Validation & Retry**: Combines all match analyses and validates them in a single call to a validator LLM using a structured Pydantic schema. If any match is missing critical details (like odds or injuries), only those matches are re-analyzed (up to 3 times) with specific feedback injected. If verification fails on the 3rd attempt, the run aborts.
+5. **Compilation & Broadcast (Step 4)**: Compiles the final report, saves it to `results/`, and broadcasts it to the designated Telegram channel.
 
 ---
 
@@ -44,17 +46,17 @@ Football Analyst Agent/
 
 ## ⚙️ Configuration & Environment
 
-The agent reads configurations from two sources: a `.env` file for API keys, and a `config.json` file for workflow options.
+The agent reads configurations from a `.env` file for API keys, and a `config.json` file for translation options.
 
 ### 1. Environment Variables (`.env`)
 
-Create a `.env` file in the root directory. It supports the following variables:
+Create a `.env` file in the root directory:
 
 | Variable | Required | Description |
 | :--- | :--- | :--- |
-| `GEMINI_API_KEY` | **Yes** | Your API key from [Google AI Studio](https://aistudio.google.com/). Used to run predictions and search grounding. |
-| `TELEGRAM_BOT_TOKEN` | *Optional* | The token for your Telegram Bot from `@BotFather`. |
-| `TELEGRAM_CHAT_ID` | *Optional* | The chat ID (or channel username/ID) where the bot will post daily summaries. |
+| `GEMINI_API_KEY` | **Yes** | Your API key from [Google AI Studio](https://aistudio.google.com/). |
+| `TELEGRAM_BOT_TOKEN` | *Optional* | Telegram Bot token from `@BotFather`. |
+| `TELEGRAM_CHAT_ID` | *Optional* | Target Telegram chat or channel ID. |
 
 *Example `.env` content:*
 ```ini
@@ -65,7 +67,7 @@ TELEGRAM_CHAT_ID="-100123456789"
 
 ### 2. General Configuration (`config.json`)
 
-You can control output localization by editing the `config.json` file in the project root:
+Control output language and date formatting:
 
 ```json
 {
@@ -74,8 +76,8 @@ You can control output localization by editing the `config.json` file in the pro
 ```
 
 * **`hebrew_translation`**:
-  * `true` (default): Output will be written and formatted in Hebrew (using `instructions/summarize_day_he.md`) and date separators will be `/` (e.g. `14/06/26`).
-  * `false`: Output will be written in English (using `instructions/summarize_day_en.md`) and date separators will be `-` (e.g. `14-06-26`).
+  * `true` (default): Output in Hebrew (using `summarize_day_he.md`) with `/` date separators (e.g. `14/06/26`).
+  * `false`: Output in English (using `summarize_day_en.md`) with `-` date separators (e.g. `14-06-26`).
 
 ---
 
@@ -83,76 +85,69 @@ You can control output localization by editing the `config.json` file in the pro
 
 ### Installation
 
-1. **Clone the repository** and navigate to the project directory:
+1. **Clone & navigate** to the project directory:
    ```bash
    cd "Football Analyst Agent"
    ```
-
-2. **Create and activate a virtual environment**:
+2. **Set up virtual environment**:
    * **Windows (PowerShell)**:
      ```powershell
-     python -m venv .venv
-     .\.venv\Scripts\Activate.ps1
+     python -m venv .venv; .\.venv\Scripts\Activate.ps1
      ```
    * **macOS/Linux**:
      ```bash
-     python -m venv .venv
-     source .venv/bin/activate
+     python -m venv .venv; source .venv/bin/activate
      ```
-
 3. **Install dependencies**:
    ```bash
    pip install -r requirements.txt
    ```
-
-4. **Setup environment variables**:
-   Create a `.env` file by copying the example template:
+4. **Configure environment**:
    ```bash
-   cp .env.example .env
+   cp .env_example.example .env
    ```
-   Open the `.env` file and insert your API keys.
+   *Note: Open `.env` and fill in your API credentials.*
 
 ### Running the Pipeline
 
-To run the agent locally:
+Run the agent normally:
 ```bash
 python src/agent.py
 ```
-This triggers the 4-step execution flow:
-1. **Connects to REST API** (or falls back to Gemini grounding) to find games for the next 24 hours.
-2. **Performs web searches** for injuries, form, tactical updates, and betting odds.
-3. **Builds the daily summary** according to the selected language template, saves it to `results/` (as a `.txt` file), and broadcasts it to Telegram.
+> [!NOTE]
+> On non-matchdays (rest days or outside the tournament window), the script exits in under a second to prevent unnecessary API calls and save costs.
+
+To bypass matchday checks and force run (e.g., during testing):
+```bash
+python src/agent.py --force
+```
 
 ---
 
 ## 🤖 GitHub Actions Automation
 
-The agent is pre-configured to run automatically on World Cup matchdays using GitHub Actions. To ensure strict timing and bypass GitHub's native cron scheduling delays, we trigger the workflow externally (e.g. via **cron-job.org**) using GitHub's REST API.
+The agent is pre-configured to run automatically on World Cup matchdays. To bypass GitHub Actions cron delays, the workflow is designed to be triggered externally (e.g., via **cron-job.org**) using GitHub's REST API.
 
-### Setting up secrets:
+### 1. Configure GitHub Repository Secrets
 
-1. Push this project to your GitHub Repository.
-2. Go to your repository on GitHub.
-3. Navigate to **Settings** > **Secrets and variables** > **Actions**.
-4. Click on **New repository secret** and add:
-   * `GEMINI_API_KEY`
-   * `TELEGRAM_BOT_TOKEN` 
-   * `TELEGRAM_CHAT_ID` 
+Add the following secrets under **Settings > Secrets and variables > Actions > New repository secret**:
+* `GEMINI_API_KEY`
+* `TELEGRAM_BOT_TOKEN`
+* `TELEGRAM_CHAT_ID`
 
 > [!WARNING]
-> **GitHub Actions & Telegram Broadcasts:**
-> If you run the pipeline using GitHub Actions without configuring `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`, you **will not be able to view the generated results**.
-> Since GitHub Actions runner environments are temporary environments, the local text files saved to the `results/` directory are discarded when the workflow run finishes. To view the daily reports and match summaries when running via GitHub Actions, you must configure the Telegram API keys so they can be broadcast to your channel.
+> **Telegram configuration is required for GitHub Actions.**
+> Since GitHub Actions environments are ephemeral, local results in the `results/` folder are discarded when the run finishes. You must configure the Telegram credentials to receive and view the reports.
 
-### Running with an External Scheduler (e.g., cron-job.org):
-1. **Create a GitHub Personal Access Token (PAT):**
-   * Go to **Settings > Developer Settings > Personal Access Tokens > Tokens (classic)** or **Fine-grained tokens**.
-   * Generate a token with permissions to read/write **Actions** on this repository.
-2. **Setup cron-job.org:**
-   * Create a cron job pointing to the GitHub API (for example:
-     `https://api.github.com/repos/itamarbarry/Football-Analyst-Agent/actions/workflows/football_analyst.yml/dispatches`)
+### 2. Setup External Scheduler (cron-job.org)
+
+1. **Create a GitHub Personal Access Token (PAT)**:
+   * Generate a token under **Settings > Developer Settings > Personal Access Tokens** with permissions to read/write **Actions** on this repository.
+2. **Configure cron-job.org**:
+   * Point the job to the GitHub API:
+     `https://api.github.com/repos/itamarbarry/Football-Analyst-Agent/actions/workflows/football_analyst.yml/dispatches`
    * Set HTTP Method to **POST**.
-   * Pass headers:
+   * Add headers:
      * `Authorization`: `Bearer YOUR_GITHUB_PAT`
      * `Accept`: `application/vnd.github.v3+json`
      * `User-Agent`: `cron-job-org`
@@ -160,6 +155,3 @@ The agent is pre-configured to run automatically on World Cup matchdays using Gi
      ```json
      { "ref": "main" }
      ```
-
-### Matchday Awareness:
-* If it's not a World Cup matchday (such as July 8, 11, 13, 16, 17, 18, or after the tournament ends on July 19), the script immediately logs a notification and exits cleanly in under a second without calling the Gemini API or sending a Telegram broadcast to save API costs.

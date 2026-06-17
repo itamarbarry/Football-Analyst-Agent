@@ -22,6 +22,7 @@ Below are the details, analyses, and predictions for today's matches:
      - For **Israel Time**, format it as `DD/MM/YY HH:MM` (e.g. `14/06/26 20:00`).
      - For **Local Time**, format it as `DD/MM/YY HH:MM` (e.g. `14/06/26 12:00`). Do not include any city name or timezone abbreviation.
      - You MUST print them on separate lines (Israel Time first, followed by Local Time).
+5. **Team & Country Names (CRITICAL)**: Write all country/team names strictly and exclusively in Hebrew. Write ONLY the actual name of the country itself, with no English letters, abbreviations, or qualifiers (e.g., write `קונגו` instead of `קונגו (DR)` or `קונגו DR`, write `ארצות הברית` instead of `ארצות הברית (USA)` or `ארה"ב (US)`). Do not append any text, indicators, or information inside or outside parentheses next to the country name.
 
 3. **Structure of the Summary**:
    - **Main Title**: Start directly with `# 📅 {date} - ניתוח משחקי המונדיאל`.
