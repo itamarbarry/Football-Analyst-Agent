@@ -21,7 +21,7 @@ if sys.stderr.encoding != 'utf-8':
     except AttributeError:
         pass
 
-# Define structured output models for Step 1
+# Define structured output models for Step 2
 class Match(BaseModel):
     home_team: str = Field(description="The official name of the home team")
     away_team: str = Field(description="The official name of the away team")
@@ -522,19 +522,29 @@ def run_pipeline():
 
     hebrew_translation = config.get_hebrew_translation_setting()
 
+    # Get current date and datetime in Israel Time
+    now_israel = get_current_datetime_israel()
+    force_run = "--force" in sys.argv
+    
+    print("=" * 60)
+    print("⚽ FOOTBALL ANALYST AGENT STARTING")
+    print("=" * 60)
+
+    # ==========================================
+    # Step 1: Matchday Verification
+    # ==========================================
+    print("\n[Step 1] Verifying tournament matchday...")
+    if not is_matchday(now_israel) and not force_run:
+        print(f"   📅 Today ({now_israel.strftime('%Y-%m-%d')}) is a rest day or outside the tournament window.")
+        print("   ⚽ Skipping pipeline execution. Use --force to override.")
+        print("=" * 60)
+        sys.exit(0)
+    print("   ✅ Matchday verification passed!")
+
     # Initialize Gemini Client with a 45-second HTTP timeout to prevent long search grounding hangs
     client = genai.Client(api_key=config.GEMINI_API_KEY, http_options={"timeout": 45000.0})
     model_name = "gemini-2.5-pro"
 
-    # Get current date and datetime in Israel Time
-    now_israel = get_current_datetime_israel()
-    force_run = "--force" in sys.argv
-    if not is_matchday(now_israel) and not force_run:
-        print("=" * 60)
-        print(f"📅 Today ({now_israel.strftime('%Y-%m-%d')}) is a rest day or outside the tournament window.")
-        print("⚽ Skipping pipeline execution. Use --force to override.")
-        print("=" * 60)
-        sys.exit(0)
     if hebrew_translation:
         today_str = now_israel.strftime("%d/%m/%y")
     else:
@@ -546,16 +556,14 @@ def run_pipeline():
     from datetime import timedelta
     end_window_israel = (now_israel + timedelta(hours=24)).strftime("%Y-%m-%d %H:%M")
     
-    print("=" * 60)
-    print("⚽ FOOTBALL ANALYST AGENT STARTING")
     print(f"📅 Current Israel Time: {now_israel_str}")
     print(f"⏳ Analysis Time Window: {now_israel_str} to {end_window_israel} (Israel Time)")
     print("=" * 60)
 
     # ==========================================
-    # Step 1: Retrieve upcoming World Cup games
+    # Step 2: Match Schedule Retrieval
     # ==========================================
-    print("\n[Step 1] Retrieving scheduled matches for the next 24 hours...")
+    print("\n[Step 2] Retrieving scheduled matches for the next 24 hours...")
     matches = []
     
     # 1. Try Primary API
@@ -675,11 +683,9 @@ def run_pipeline():
         print(f"        - Local Time:  {m.match_time_local}")
 
     # ==========================================
-    # Step 2 & 3: Analyze and Predict each game individually
+    # Step 3: Match Research & Prediction
     # ==========================================
-    print("\n" + "-" * 60)
-    print("[Step 2 & 3] Researching and Predicting Matches (Individual Calls)")
-    print("-" * 60)
+    print("\n[Step 3] Researching and predicting upcoming matches...")
     
     # Map each match to its latest analysis text, retry/attempt state, and feedback
     # Keys will be "Home Team vs Away Team"
@@ -687,73 +693,52 @@ def run_pipeline():
     match_attempts = {f"{m.home_team} vs {m.away_team}": 0 for m in matches}
     match_missing_feedback = {f"{m.home_team} vs {m.away_team}": "" for m in matches}
     
-    max_pipeline_attempts = 3
-    pipeline_attempt = 1
-    
     analyze_instr_template = load_instruction("analyze_game.md")
     predict_instr_template = load_instruction("predict_game.md")
     grounding_tool = types.Tool(google_search=types.GoogleSearch())
     
-    while pipeline_attempt <= max_pipeline_attempts:
-        print(f"\n🔄 Pipeline Validation Attempt {pipeline_attempt}/{max_pipeline_attempts}...")
+    # Perform initial research and prediction for all matches
+    for m in matches:
+        m_key = f"{m.home_team} vs {m.away_team}"
+        match_attempts[m_key] += 1
+        print(f"   👉 Researching and predicting {m_key}...")
         
-        # Determine which matches need to be analyzed (or re-analyzed)
-        matches_to_analyze = []
-        for m in matches:
-            m_key = f"{m.home_team} vs {m.away_team}"
-            if m_key not in match_analyses:
-                matches_to_analyze.append(m)
-                
-        if not matches_to_analyze:
-            print("   ✅ No matches need analysis/re-analysis in this iteration.")
-        else:
-            print(f"   🔍 Analyzing {len(matches_to_analyze)} match(es)...")
-            for m in matches_to_analyze:
-                m_key = f"{m.home_team} vs {m.away_team}"
-                match_attempts[m_key] += 1
-                curr_attempt = match_attempts[m_key]
-                
-                print(f"      👉 Researching and predicting {m_key} (Match Attempt {curr_attempt})...")
-                
-                extra_instruction = ""
-                if curr_attempt > 1:
-                    feedback = match_missing_feedback.get(m_key, "")
-                    feedback_str = f" (specifically: {feedback})" if feedback else ""
-                    extra_instruction = (
-                        f"\n\n⚠️ RETRY WARNING (Attempt {curr_attempt}): In the previous attempt, "
-                        f"the validator flagged that some information{feedback_str} was missing, unavailable, or could not be found. "
-                        f"This information IS available on the web. Please perform a more thorough search using different/broader queries (e.g. searching ESPN, WhoScored, Bet365, "
-                        f"Oddsportal, rotowire, wiki, etc. for '{m.home_team} vs {m.away_team}'), and ensure that every section is populated with concrete facts, "
-                        f"odds, and injury details instead of writing 'not available'."
-                    )
-                
-                match_prompt = (
-                    f"You are a professional football analyst and tipster. Your task is to perform web research "
-                    f"and make scoreline/winner predictions for the upcoming match:\n\n"
-                    f"Match: {m.home_team} vs {m.away_team}\n"
-                    f"Scheduled Time (Israel Time): {m.match_time_israel}\n"
-                    f"Scheduled Time (Local Time): {m.match_time_local}\n\n"
-                    f"--- RESEARCH GUIDELINES ---\n"
-                    f"{analyze_instr_template.format(home_team=m.home_team, away_team=m.away_team, date=today_str)}\n\n"
-                    f"--- PREDICTION GUIDELINES ---\n"
-                    f"{predict_instr_template.format(home_team=m.home_team, away_team=m.away_team, analysis_context='(Use your research findings to predict)')}"
-                    f"{extra_instruction}"
-                )
-                
-                try:
-                    config_analysis = types.GenerateContentConfig(tools=[grounding_tool])
-                    analysis_resp = generate_content_with_retry(
-                        client=client,
-                        model=model_name,
-                        contents=match_prompt,
-                        config=config_analysis,
-                    )
-                    match_analyses[m_key] = analysis_resp.text
-                except Exception as e:
-                    print(f"      ❌ Error researching {m_key}: {e}", file=sys.stderr)
-                    if pipeline_attempt == max_pipeline_attempts:
-                        raise e
-                    continue
+        match_prompt = (
+            f"You are a professional football analyst and tipster. Your task is to perform web research "
+            f"and make scoreline/winner predictions for the upcoming match:\n\n"
+            f"Match: {m.home_team} vs {m.away_team}\n"
+            f"Scheduled Time (Israel Time): {m.match_time_israel}\n"
+            f"Scheduled Time (Local Time): {m.match_time_local}\n\n"
+            f"--- RESEARCH GUIDELINES ---\n"
+            f"{analyze_instr_template.format(home_team=m.home_team, away_team=m.away_team, date=today_str)}\n\n"
+            f"--- PREDICTION GUIDELINES ---\n"
+            f"{predict_instr_template.format(home_team=m.home_team, away_team=m.away_team, analysis_context='(Use your research findings to predict)')}"
+        )
+        
+        try:
+            config_analysis = types.GenerateContentConfig(tools=[grounding_tool])
+            analysis_resp = generate_content_with_retry(
+                client=client,
+                model=model_name,
+                contents=match_prompt,
+                config=config_analysis,
+            )
+            match_analyses[m_key] = analysis_resp.text
+        except Exception as e:
+            print(f"      ❌ Error during initial research for {m_key}: {e}", file=sys.stderr)
+            # Do not raise; let Step 4 detect missing analysis and retry it
+            continue
+
+    # ==========================================
+    # Step 4: Quality Validation & Correction Loop
+    # ==========================================
+    print("\n[Step 4] Validating match analyses and correcting missing details...")
+    
+    max_validation_attempts = 3
+    validation_attempt = 1
+    
+    while validation_attempt <= max_validation_attempts:
+        print(f"   🔍 Quality Validation Attempt {validation_attempt}/{max_validation_attempts}...")
         
         # Build the combined report to send to the Validator LLM
         combined_report_list = []
@@ -769,7 +754,6 @@ def run_pipeline():
         combined_report_str = "\n".join(combined_report_list)
         
         # Run Validator LLM
-        print("   🔍 Validating combined match analyses and predictions...")
         validator_prompt = (
             f"You are a strict validation agent. Your job is to check the combined match report below "
             f"and determine if all critical details (current betting odds, injuries/suspensions, and form) "
@@ -801,37 +785,96 @@ def run_pipeline():
             validation_result = ValidationResult(**validation_data)
             
             any_incomplete = False
+            matches_to_reanalyze = []
             for res in validation_result.results:
-                print(f"      • Match '{res.match_name}': Complete = {res.is_complete}")
-                if not res.is_complete:
-                    any_incomplete = True
-                    print(f"        Reason: {res.missing_details_summary}")
+                # If a match has no analysis generated at all, treat it as incomplete
+                is_complete_val = res.is_complete
+                if res.match_name not in match_analyses:
+                    is_complete_val = False
+                    missing_summary = "Initial research failed to generate content."
+                else:
+                    missing_summary = res.missing_details_summary
                     
-                    # Evict from match_analyses to trigger re-analysis in the next loop
+                print(f"      • Match '{res.match_name}': Complete = {is_complete_val}")
+                if not is_complete_val:
+                    any_incomplete = True
+                    print(f"        Reason: {missing_summary}")
+                    
+                    # Evict from match_analyses to trigger re-analysis
                     if res.match_name in match_analyses:
                         del match_analyses[res.match_name]
-                    match_missing_feedback[res.match_name] = res.missing_details_summary
+                    match_missing_feedback[res.match_name] = missing_summary
+                    
+                    # Find the match object corresponding to match_name
+                    for m in matches:
+                        if f"{m.home_team} vs {m.away_team}" == res.match_name:
+                            matches_to_reanalyze.append(m)
+                            break
             
             if not any_incomplete:
-                print("   ✅ All match analyses are complete and valid!")
+                print("   ✅ Quality validation passed! All analyses are complete.")
                 break
                 
+            if validation_attempt == max_validation_attempts:
+                # We have reached max attempts and still have incomplete matches
+                print("\n❌ CRITICAL: Incomplete information after maximum validation attempts.", file=sys.stderr)
+                for m in matches:
+                    m_key = f"{m.home_team} vs {m.away_team}"
+                    if m_key not in match_analyses:
+                        feedback = match_missing_feedback.get(m_key, "Unknown details missing")
+                        print(f"   - Match '{m_key}' is still missing data: {feedback}", file=sys.stderr)
+                raise RuntimeError("Pipeline terminated: Unable to retrieve complete information for all scheduled matches.")
+                
+            # If there are incomplete matches, re-run research for them
+            print(f"   🔄 Re-researching and predicting {len(matches_to_reanalyze)} incomplete match(es)...")
+            for m in matches_to_reanalyze:
+                m_key = f"{m.home_team} vs {m.away_team}"
+                match_attempts[m_key] += 1
+                curr_attempt = match_attempts[m_key]
+                
+                feedback = match_missing_feedback.get(m_key, "")
+                feedback_str = f" (specifically: {feedback})" if feedback else ""
+                extra_instruction = (
+                    f"\n\n⚠️ RETRY WARNING (Attempt {curr_attempt}): In the previous attempt, "
+                    f"the validator flagged that some information{feedback_str} was missing, unavailable, or could not be found. "
+                    f"This information IS available on the web. Please perform a more thorough search using different/broader queries (e.g. searching ESPN, WhoScored, Bet365, "
+                    f"Oddsportal, rotowire, wiki, etc. for '{m.home_team} vs {m.away_team}'), and ensure that every section is populated with concrete facts, "
+                    f"odds, and injury details instead of writing 'not available'."
+                )
+                
+                match_prompt = (
+                    f"You are a professional football analyst and tipster. Your task is to perform web research "
+                    f"and make scoreline/winner predictions for the upcoming match:\n\n"
+                    f"Match: {m.home_team} vs {m.away_team}\n"
+                    f"Scheduled Time (Israel Time): {m.match_time_israel}\n"
+                    f"Scheduled Time (Local Time): {m.match_time_local}\n\n"
+                    f"--- RESEARCH GUIDELINES ---\n"
+                    f"{analyze_instr_template.format(home_team=m.home_team, away_team=m.away_team, date=today_str)}\n\n"
+                    f"--- PREDICTION GUIDELINES ---\n"
+                    f"{predict_instr_template.format(home_team=m.home_team, away_team=m.away_team, analysis_context='(Use your research findings to predict)')}"
+                    f"{extra_instruction}"
+                )
+                
+                try:
+                    config_analysis = types.GenerateContentConfig(tools=[grounding_tool])
+                    analysis_resp = generate_content_with_retry(
+                        client=client,
+                        model=model_name,
+                        contents=match_prompt,
+                        config=config_analysis,
+                    )
+                    match_analyses[m_key] = analysis_resp.text
+                except Exception as e:
+                    print(f"      ❌ Error re-researching {m_key}: {e}", file=sys.stderr)
+                    # Let the next loop iteration handle/raise
+                    continue
+                    
         except Exception as e:
             print(f"   ⚠️ Error during validation step: {e}", file=sys.stderr)
-            if pipeline_attempt == max_pipeline_attempts:
+            if validation_attempt == max_validation_attempts:
                 raise RuntimeError(f"Validation step failed: {e}")
-        
-        pipeline_attempt += 1
-        
-    else:
-        # If we exited the loop without breaking, we reached the max attempts and some matches are still incomplete.
-        print("\n❌ CRITICAL: Incomplete information after maximum attempts.", file=sys.stderr)
-        for m in matches:
-            m_key = f"{m.home_team} vs {m.away_team}"
-            if m_key not in match_analyses:
-                feedback = match_missing_feedback.get(m_key, "Unknown details missing")
-                print(f"   - Match '{m_key}' is still missing data: {feedback}", file=sys.stderr)
-        raise RuntimeError("Pipeline terminated: Unable to retrieve complete information for all scheduled matches.")
+                
+        validation_attempt += 1
 
     # Reconstruct the chronological list of individual analyses
     individual_analyses = []
@@ -848,20 +891,20 @@ def run_pipeline():
     print("\n   ✅ All matches analyzed and predicted successfully.")
 
     # ==========================================
-    # Step 4: Create a summary
+    # Step 5: Summary Compilation & Broadcast
     # ==========================================
     hebrew_translation = config.get_hebrew_translation_setting()
     
     print("\n" + "-" * 60)
     if hebrew_translation:
-        print("[Step 4] Creating Final Daily Summary (Hebrew)")
+        print("[Step 5] Creating Final Daily Summary (Hebrew)")
         instr_file = "summarize_day_he.md"
     else:
-        print("[Step 4] Creating Final Daily Summary (English)")
+        print("[Step 5] Creating Final Daily Summary (English)")
         instr_file = "summarize_day_en.md"
     print("-" * 60)
     
-    # Construct combined input for Step 4 containing both raw times from Step 1 and analysis text from Step 2/3
+    # Construct combined input for Step 5 containing both raw times from Step 2 and analysis text from Step 3/4
     combined_matches_data_list = []
     combined_matches_data_list.append("--- SCHEDULED MATCH TIMES ---")
     for match in matches:

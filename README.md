@@ -7,19 +7,19 @@ The agent is powered by the **Google GenAI SDK** (utilizing `gemini-2.5-pro` wit
 ---
 
 ## 🌟 How the Agent Works
-
-The agent runs in five sequential stages:
-
+ 
+The agent runs in five sequential steps:
+ 
 1. **Matchday Verification**: Checks if the current date is a scheduled World Cup 2026 matchday (June 11 to July 19, excluding rest days) to save API costs, unless overridden via `--force`.
-2. **Daily Matches Retrieval (Step 1)**: Queries the **World Cup 2026 REST API (worldcup26.ir)** for upcoming matches. If it fails or returns no matches, the agent sequentially falls back to **thestatsapi.com**, then to the **OpenFootball API (GitHub)**, and finally to **Gemini Search Grounding** if all APIs fail.
-3. **Research & Prediction (Steps 2 & 3)**: Queries Google Search Grounding for each match to research team news, betting odds, injuries, suspensions, and tactical form, generating detailed previews and score predictions.
-4. **Validation & Retry**: Combines all match analyses and validates them in a single call to a validator LLM using a structured Pydantic schema. If any match is missing critical details (like odds or injuries), only those matches are re-analyzed (up to 3 times) with specific feedback injected. If verification fails on the 3rd attempt, the run aborts.
-5. **Compilation & Broadcast (Step 4)**: Compiles the final report, saves it to `results/`, and broadcasts it to the designated Telegram channel.
-
+2. **Daily Matches Retrieval**: Queries the **World Cup 2026 REST API (worldcup26.ir)** for upcoming matches. If it fails or returns no matches, the agent sequentially falls back to the **TheStatsAPI JSON API (thestatsapi.com)**, then to the **OpenFootball JSON API**, and finally to **Gemini Search Grounding** if all APIs fail.
+3. **Match Research & Prediction**: Queries Google Search Grounding for each match to research team news, betting odds, injuries, suspensions, and tactical form, generating detailed previews and score predictions.
+4. **Quality Validation & Correction**: All match analyses are combined and reviewed by an LLM-as-a-validator. If any match is missing critical details (e.g., odds or injuries), it is re-analyzed (up to three times) with targeted feedback injected into the prompt. If validation fails on the third attempt, the run aborts.
+5. **Summary Compilation & Broadcast**: Compiles the final report, saves it to `results/`, and broadcasts it to the designated Telegram channel.
+ 
 ---
-
+ 
 ## 📂 Project Structure
-
+ 
 ```text
 Football Analyst Agent/
 ├── .github/
@@ -28,11 +28,11 @@ Football Analyst Agent/
 ├── results/
 │   └── DD-MM-YY_HH-MM.txt         # Saved local text files
 ├── instructions/
-│   ├── retrieve_games.md          # Step 1: LLM match retrieval template
-│   ├── analyze_game.md            # Step 2: Search grounding template
+│   ├── retrieve_games.md          # Step 2: LLM match retrieval template
+│   ├── analyze_game.md            # Step 3: Search grounding template
 │   ├── predict_game.md            # Step 3: Tipster prediction template
-│   ├── summarize_day_he.md        # Step 4: Hebrew summarization instructions
-│   └── summarize_day_en.md        # Step 4: English summarization instructions
+│   ├── summarize_day_he.md        # Step 5: Hebrew summarization instructions
+│   └── summarize_day_en.md        # Step 5: English summarization instructions
 ├── src/
 │   ├── agent.py                   # Main pipeline script
 │   └── config.py                  # Settings loader and verification
